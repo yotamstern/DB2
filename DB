@@ -1,0 +1,25 @@
+class Database:
+    def __init__(self):
+        """
+        Initializes the database with an optional dictionary.
+        """
+        self.data = {}
+
+    def set_value(self, key, value):
+        """
+        Sets a value for a given key.
+        """
+        self.data[key] = value
+
+    def get_value(self, key):
+        """
+        Gets the value for a given key. Returns None if the key doesn't exist.
+        """
+        return self.data.get(key, None)
+
+    def delete_value(self, key):
+        """
+        Deletes a key-value pair from the database. Does nothing if the key doesn't exist.
+        """
+        del self.data[key]
+
