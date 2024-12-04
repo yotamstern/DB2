@@ -1,0 +1,166 @@
+import logging
+import win32event
+import win32con
+from DB import Database
+
+# Configure logging
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# Maximum number of concurrent readers allowed
+MAX_READERS = 10
+
+
+class SyncDatabase(Database):
+    """
+    A thread- or process-safe database wrapper that extends the functionality of the `Database` class.
+    Provides synchronization mechanisms to manage concurrent access using semaphores and mutexes.
+
+    Attributes:
+        filename (str): The name of the file where the database will be persisted.
+        mode (str): The mode of synchronization, either "threads" or "processes".
+        read_semaphore: A semaphore to control the number of concurrent readers.
+        write_lock: A mutex to ensure exclusive access during write operations.
+    """
+
+    def __init__(self, filename="database.pkl", mode="threads"):
+        """
+        Initialize the SyncDatabase with synchronization mechanisms for thread-safe or process-safe operation.
+
+        Args:
+            filename (str): Optional filename for the database file (default is "database.pkl").
+            mode (str): Mode of operation, either "threads" or "processes" (default is "threads").
+        
+        Raises:
+            ValueError: If an invalid mode is provided.
+        """
+        super().__init__()  # Initialize the parent class
+        self.filename = filename
+        self.mode = mode
+
+        # Configure synchronization mechanisms based on the mode
+        if self.mode == "threads":
+            # Mutex for write lock, Semaphore for read control in threading mode
+            self.read_semaphore = win32event.CreateSemaphore(None, MAX_READERS, MAX_READERS, None)
+            self.write_lock = win32event.CreateMutex(None, False, None)
+            logging.debug("Database initialized in thread mode.")
+        elif self.mode == "processes":
+            # Mutex for write lock, Semaphore for read control in multiprocessing mode
+            self.read_semaphore = win32event.CreateSemaphore(None, MAX_READERS, MAX_READERS, None)
+            self.write_lock = win32event.CreateMutex(None, False, None)
+            logging.debug("Database initialized in process mode.")
+        else:
+            logging.error("Invalid mode provided: %s", mode)
+            raise ValueError("Mode must be 'threads' or 'processes'.")
+
+    def get_read_lock(self):
+        """
+        Acquire a read lock to allow safe reading from the database.
+        Uses a semaphore to ensure the number of concurrent readers does not exceed `MAX_READERS`.
+        """
+        logging.debug("Attempting to acquire read lock.")
+        result = win32event.WaitForSingleObject(self.read_semaphore, 1000)
+        if result == win32con.WAIT_OBJECT_0:
+            logging.debug("Read lock acquired.")
+        else:
+            logging.error("Failed to acquire read lock.")
+
+    def release_read_lock(self):
+        """
+        Release a previously acquired read lock, allowing other readers to access the database.
+        """
+        logging.debug("Attempting to release read lock.")
+        win32event.ReleaseSemaphore(self.read_semaphore, 1)
+        logging.debug("Read lock released.")
+
+    def get_write_lock(self):
+        """
+        Acquire a write lock to allow safe writing to the database.
+        Blocks all readers by acquiring all read locks before proceeding with the write operation.
+        """
+        logging.debug("Attempting to acquire write lock.")
+        result = win32event.WaitForSingleObject(self.write_lock, 1000)
+        if result == win32con.WAIT_OBJECT_0:
+            logging.debug("Write lock acquired. Blocking new readers.")
+            # Block all readers by acquiring all read locks
+            for i in range(MAX_READERS):
+                win32event.WaitForSingleObject(self.read_semaphore, 1000)
+            logging.debug("All read locks acquired for write operation.")
+        else:
+            logging.error("Failed to acquire write lock.")
+
+    def release_write_lock(self):
+        """
+        Release a previously acquired write lock, allowing readers and writers to access the database.
+        Releases all blocked read locks after the write operation is complete.
+        """
+        logging.debug("Attempting to release write lock.")
+        # Release all read locks acquired during write lock acquisition
+        for i in range(MAX_READERS):
+            win32event.ReleaseSemaphore(self.read_semaphore, 1)
+        logging.debug("All read locks released after write operation.")
+        win32event.ReleaseMutex(self.write_lock)
+        logging.debug("Write lock released.")
+
+    def delete_value(self, key):
+        """
+        Delete a value from the database safely with synchronization.
+
+        Args:
+            key: The key to be deleted from the database.
+
+        Notes:
+            Uses a write lock to ensure no other readers or writers can access the database during the operation.
+        """
+        logging.info("Attempting to delete key: %s", key)
+        self.get_write_lock()
+        try:
+            super().delete_value(key)  # Call the parent class's delete_value method
+            logging.info("Successfully deleted key: %s", key)
+        except KeyError:
+            logging.warning("Key not found for deletion: %s", key)
+        finally:
+            self.release_write_lock()
+
+    def get_value(self, key):
+        """
+        Retrieve a value from the database safely with synchronization.
+
+        Args:
+            key: The key to retrieve the value for.
+
+        Returns:
+            The value associated with the key, or None if the key is not found.
+
+        Notes:
+            Uses a read lock to allow safe concurrent reading.
+        """
+        logging.info("Attempting to retrieve key: %s", key)
+        self.get_read_lock()
+        try:
+            value = super().get_value(key)  # Call the parent class's get_value method
+            logging.info("Successfully retrieved key: %s with value: %s", key, value)
+            return value
+        except KeyError:
+            logging.warning("Key not found: %s", key)
+            return None
+        finally:
+            self.release_read_lock()
+
+    def set_value(self, key, value):
+        """
+        Set a value in the database safely with synchronization.
+
+        Args:
+            key: The key to set the value for.
+            value: The value to be stored in the database.
+
+        Notes:
+            Uses a write lock to ensure no other readers or writers can access the database during the operation.
+        """
+        logging.info("Attempting to set key: %s with value: %s", key, value)
+        self.get_write_lock()
+        try:
+            super().set_value(key, value)  # Call the parent class's set_value method
+            logging.info("Successfully set key: %s with value: %s", key, value)
+        finally:
+            self.release_write_lock()
