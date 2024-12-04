@@ -1,0 +1,146 @@
+import os
+import json
+from DB import Database
+import win32file
+
+
+class FileDatabase(Database):
+    """
+    A file-based implementation of the `Database` class.
+    This class persists the database to a file, ensuring data is saved and loaded
+    using JSON serialization, and leverages `win32file` for file operations.
+
+    Attributes:
+        filename (str): The name of the file where the database data is stored.
+    """
+
+    def __init__(self, filename="database.txt"):
+        """
+        Initializes the FileDatabase with a given filename.
+        Ensures the file exists by creating it if necessary.
+
+        Args:
+            filename (str): The name of the file to use for storing the database (default: "database.txt").
+        """
+        super().__init__()  # Initialize the parent class
+        self.filename = filename
+
+        # Ensure the file exists by creating it if it doesn't
+        if not os.path.exists(self.filename):
+            self.dump()
+
+    def dump(self):
+        """
+        Serializes the current database data (a dictionary) to a JSON string
+        and writes it to the file. Uses `win32file` for efficient file operations.
+        """
+        # Serialize the data dictionary to JSON
+        data = json.dumps(self.data).encode('utf-8')
+
+        # Open the file in write mode with `win32file`
+        handle = win32file.CreateFile(
+            self.filename,
+            win32file.GENERIC_WRITE,
+            win32file.FILE_SHARE_READ | win32file.FILE_SHARE_WRITE,
+            None,
+            win32file.OPEN_ALWAYS,
+            0,
+            None
+        )
+
+        # Write the data to the file
+        win32file.SetFilePointer(handle, 0, win32file.FILE_BEGIN)  # Move to the start of the file
+        win32file.SetEndOfFile(handle)  # Truncate the file to avoid leftover data
+        win32file.WriteFile(handle, data)  # Write serialized data to the file
+        win32file.CloseHandle(handle)  # Close the file handle
+
+    def load(self):
+        """
+        Reads the data from the file and deserializes it into a Python dictionary.
+        Handles empty files, missing files, and invalid JSON gracefully by initializing
+        an empty dictionary in such cases.
+        """
+        if not os.path.exists(self.filename):
+            # If the file doesn't exist, initialize an empty dictionary
+            self.data = {}
+            return
+
+        try:
+            # Open the file in read mode with `win32file`
+            handle = win32file.CreateFile(
+                self.filename,
+                win32file.GENERIC_READ,
+                win32file.FILE_SHARE_READ,
+                None,
+                win32file.OPEN_EXISTING,
+                0,
+                None
+            )
+
+            try:
+                # Read the file data in chunks to handle larger files
+                data = b""
+                while True:
+                    result, chunk = win32file.ReadFile(handle, 1024)  # Read 1024 bytes at a time
+                    if not chunk:  # End of file reached
+                        break
+                    data += chunk
+
+                # Deserialize the JSON data
+                if data:
+                    try:
+                        self.data = json.loads(data.decode('utf-8'))
+                    except json.JSONDecodeError:
+                        # Initialize as an empty dictionary if the JSON is invalid
+                        self.data = {}
+                else:
+                    # Initialize as an empty dictionary if the file is empty
+                    self.data = {}
+
+            finally:
+                # Ensure the file handle is closed
+                win32file.CloseHandle(handle)
+
+        except Exception as e:
+            # Log or print the error and initialize as an empty dictionary
+            print(f"Error reading file {self.filename}: {e}")
+            self.data = {}
+
+    def delete_value(self, key):
+        """
+        Deletes a key from the database and updates the file on disk.
+
+        Args:
+            key: The key to be deleted from the database.
+
+        Raises:
+            KeyError: If the key does not exist in the database.
+        """
+        self.load()  # Load the latest data from the file
+        super().delete_value(key)  # Use the parent class's delete_value method
+        self.dump()  # Save the updated data back to the file
+
+    def get_value(self, key):
+        """
+        Retrieves the value associated with a given key.
+
+        Args:
+            key: The key to look up in the database.
+
+        Returns:
+            The value associated with the key, or None if the key does not exist.
+        """
+        self.load()  # Load the latest data from the file
+        return super().get_value(key)  # Use the parent class's get_value method
+
+    def set_value(self, key, value):
+        """
+        Sets a key-value pair in the database and updates the file on disk.
+
+        Args:
+            key: The key to store the value under.
+            value: The value to store in the database.
+        """
+        self.load()  # Load the latest data from the file
+        super().set_value(key, value)  # Use the parent class's set_value method
+        self.dump()  # Save the updated data back to the file
